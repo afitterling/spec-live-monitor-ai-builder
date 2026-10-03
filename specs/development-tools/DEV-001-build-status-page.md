@@ -68,6 +68,19 @@ the editr rebuild while the work goes on.
     used, in percent per window (5-hour, week), with the time to reset and the
     time the figures were read. They come from the Claude Code status line
     (`scripts/statusline.mjs`); without them the page says so.
+11b. The page **MUST** estimate when 100 % of the acceptance criteria are met,
+    without and with the usage limits:
+    - without limits: open criteria ÷ pace (criteria met per hour of active
+      agent work, gaps over 30 minutes left out), as hours of work and a time,
+      also at the pace of the last 3 hours of work;
+    - tokens: tokens per met criterion and tokens still needed (output and
+      input incl. cache);
+    - with limits: for every limit window the share one hour of work uses
+      (window share used ÷ this project's output tokens in the window), what
+      the rest needs, and the time with waits for resets, simulated in
+      5-minute steps;
+    - that the estimate is rough and why (same cost per criterion, no breaks,
+      limits are per account, output tokens as the usage measure).
 12. Token figures **MUST** be numbers, model names and timestamps only; agent
     activity adds tool names, repository-relative paths of files read or
     edited, spec IDs and § numbers found in edits, a fixed label for what a
@@ -119,6 +132,8 @@ the editr rebuild while the work goes on.
 - [x] The top of the page names the spec, the § and the requirement text being worked on, with the current action and a spinner while active. *(Checked locally: "FR-037 · Details and skin — §4 "Reset" MUST set all five controls to off as one undo step".)*
 - [x] The live feed lists the last 30 actions with their spec and § links. *(Checked locally.)*
 - [x] Ticking criteria in a spec file shows up as "Last checked". *(FR-031 criteria 1–5, detected from the edit.)*
+- [x] The ETA shows a time without and with limits, hours of work, pace, tokens per criterion and tokens still needed. *(Checked locally on 2026-10-03: 3.6 h, 103 open criteria, 1.2 M output tokens; limits do not stop the work.)*
+- [x] With a nearly full 5-hour window the ETA with limits moves past the reset. *(Checked locally with the window set to 90 %: about 41 h of waiting.)*
 - [x] The pushed document contains no conversation text. *(By construction: from the transcripts only usage numbers, model names, timestamps and session ids are read.)*
 
 ## Rebuild

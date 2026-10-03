@@ -125,6 +125,17 @@ details.files summary { cursor: pointer; color: var(--text-dim); font-size: 12px
 .commits li { align-items: center; flex-wrap: wrap; }
 .commits .pf.link { border: 1px solid var(--border); padding: 1px 6px; border-radius: 5px; font-size: 11px; }
 
+/* ETA */
+.eta-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 10px; margin-bottom: 10px; }
+.eta-big { background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; }
+.eta-big .label { color: var(--text-dim); font-size: 12px; }
+.eta-big .value { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; margin: 2px 0; }
+.eta-big .sub { color: var(--text-dim); font-size: 12px; }
+.eta-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; margin: 0 0 10px; font-size: 12px; }
+.eta-facts dt { color: var(--text-dim); }
+.eta-facts dd { margin: 0; font-variant-numeric: tabular-nums; }
+@media (max-width: 480px) { .eta-facts { grid-template-columns: minmax(0, 1fr); } .eta-facts dd { margin-bottom: 4px; } }
+
 /* Spinner */
 .spin { display: inline-block; flex: 0 0 auto; width: 16px; height: 16px; border-radius: 50%;
   border: 2px solid rgba(61,125,255,.25); border-top-color: var(--accent); animation: spin .8s linear infinite; vertical-align: -3px; }

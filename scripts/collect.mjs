@@ -199,7 +199,7 @@ function collectTests() {
  * `toolUses` (see toolUse()); their outcome (failed or not) comes from the
  * matching tool result. Nothing else of a call or its result is kept.
  */
-function collectTokens(toolUses = []) {
+function collectTokens(toolUses = [], msgSink = []) {
   const seenTools = new Set();
   const failed = new Map();
   const files = walk(TRANSCRIPTS, (n) => n.endsWith(".jsonl"));
@@ -287,6 +287,7 @@ function collectTokens(toolUses = []) {
     limits = { at: l.at, windows: l.windows.map(({ key, usedPct, resetsAt }) => ({ key, usedPct, resetsAt })) };
   } catch {}
   for (const u of toolUses) if (failed.has(u.id)) u.failed = failed.get(u.id);
+  for (const m of messages.values()) msgSink.push(m);
   const latest = [...messages.values()].sort((a, b) => (a.at < b.at ? 1 : -1))[0];
   return {
     source: "Claude Code session transcripts of this project (usage numbers only)",
@@ -619,13 +620,165 @@ function liveWork(specs, toolUses, specByFile, known, now) {
   };
 }
 
+// ---------------------------------------------------------------- ETA
+
+/** A gap between two model responses longer than this is a break, not work. */
+const BREAK_MS = 30 * 60 * 1000;
+const RECENT_WORK_MS = 3 * 60 * 60 * 1000;
+const WINDOW_MS = { five_hour: 5 * 3600e3, seven_day: 7 * 24 * 3600e3, seven_day_opus: 7 * 24 * 3600e3, seven_day_sonnet: 7 * 24 * 3600e3 };
+
+/** Active work time in ms: the sum of gaps between responses, breaks left out. */
+function activeMs(times) {
+  let ms = 0;
+  for (let i = 1; i < times.length; i++) {
+    const gap = times[i] - times[i - 1];
+    if (gap < BREAK_MS) ms += gap;
+  }
+  return ms;
+}
+
+/**
+ * Estimate to 100 % of the acceptance criteria, without and with the plan's
+ * usage limits.
+ *
+ * Without limits: remaining criteria ÷ pace (criteria met per active hour of
+ * the agent), spread over the active hours per working day seen so far.
+ * Tokens: remaining criteria × tokens per criterion met so far.
+ * With limits: the share of each limit window this project used per output
+ * token (output tokens of this project in the window ÷ used %) gives the share
+ * the remaining work needs; whatever does not fit before the reset waits for
+ * the next windows. Output tokens stand in for usage, and other projects in
+ * the same windows are not seen: a rough figure, and the page says so.
+ */
+function eta(summary, msgs, toolUses, limits) {
+  const now = Date.now();
+  const all = summary.all;
+  const remaining = all.points.total - all.points.done;
+  const times = msgs.map((m) => Date.parse(m.at)).filter(Number.isFinite).sort((a, b) => a - b);
+  if (!times.length) return null;
+  const workMs = activeMs(times);
+  const workH = workMs / 3600e3;
+  const days = new Set(times.map((t) => new Date(t).toISOString().slice(0, 10))).size;
+  const hoursPerDay = days ? workH / days : null;
+  const output = msgs.reduce((n, m) => n + m.output, 0);
+  const input = msgs.reduce((n, m) => n + m.input + m.cacheWrite + m.cacheRead, 0);
+
+  const pace = workH > 0.1 && all.points.done ? all.points.done / workH : null;
+  // Recent pace: criteria ticked in spec files during the last 3 h of work.
+  const recentFrom = (() => {
+    let acc = 0;
+    for (let i = times.length - 1; i > 0; i--) {
+      const gap = times[i] - times[i - 1];
+      if (gap < BREAK_MS) acc += gap;
+      if (acc >= RECENT_WORK_MS) return times[i - 1];
+    }
+    return times[0];
+  })();
+  const recentTicks = toolUses.filter((u) => u.ticked?.length && Date.parse(u.at) >= recentFrom).reduce((n, u) => n + u.ticked.length, 0);
+  const recentH = activeMs(times.filter((t) => t >= recentFrom)) / 3600e3;
+  const recentPace = recentTicks >= 3 && recentH > 0.25 ? recentTicks / recentH : null;
+
+  const perCriterion = all.points.done ? { output: output / all.points.done, input: input / all.points.done } : null;
+  const needed = perCriterion ? { output: Math.round(perCriterion.output * remaining), input: Math.round(perCriterion.input * remaining) } : null;
+
+  const workLeftH = pace ? remaining / pace : null;
+  const workLeftRecentH = recentPace ? remaining / recentPace : null;
+  const outputPerWorkH = workH > 0.1 ? output / workH : null;
+
+  const windows = [];
+  for (const w of limits?.windows ?? []) {
+    const len = WINDOW_MS[w.key];
+    const reset = w.resetsAt ? Date.parse(w.resetsAt) : NaN;
+    if (!len || !Number.isFinite(reset)) continue;
+    const start = reset - len;
+    const used = msgs.filter((m) => Date.parse(m.at) >= start).reduce((n, m) => n + m.output, 0);
+    // Too little in the window to say how much one token costs.
+    const reliable = w.usedPct >= 3 && used >= 20_000;
+    const pctPerMOutput = reliable ? (w.usedPct / used) * 1e6 : null;
+    windows.push({
+      key: w.key,
+      usedPct: w.usedPct,
+      resetsAt: w.resetsAt,
+      lenH: len / 3600e3,
+      usedOutput: used,
+      pctPerMOutput,
+      neededPct: pctPerMOutput !== null && needed ? (needed.output / 1e6) * pctPerMOutput : null,
+      // Share of the window one hour of work uses at the usual token rate.
+      pctPerWorkH: pctPerMOutput !== null && outputPerWorkH ? (outputPerWorkH / 1e6) * pctPerMOutput : null,
+    });
+  }
+
+  // Without limits: the agent works on without a stop at the usual pace.
+  const freeAt = workLeftH !== null ? now + workLeftH * 3600e3 : null;
+
+  // With limits: simulate the work in 5-minute steps. Work only goes on while
+  // every window has room for the step; a full window waits for its reset.
+  let limitAt = freeAt;
+  let waitH = 0;
+  const binding = new Map();
+  const sim = windows.filter((w) => w.pctPerWorkH);
+  if (workLeftH !== null && sim.length) {
+    const STEP_H = 5 / 60;
+    const state = sim.map((w) => ({ w, pct: w.usedPct, end: Date.parse(w.resetsAt), lenMs: w.lenH * 3600e3 }));
+    let t = now;
+    let left = workLeftH;
+    for (let i = 0; i < 60 * 24 * 12 && left > 0; i++) {
+      for (const st of state) {
+        while (t >= st.end) {
+          st.pct = 0;
+          st.end += st.lenMs;
+        }
+      }
+      const blocked = state.filter((st) => st.pct + st.w.pctPerWorkH * STEP_H > 100);
+      if (blocked.length) {
+        for (const st of blocked) binding.set(st.w.key, (binding.get(st.w.key) ?? 0) + STEP_H);
+        waitH += STEP_H;
+      } else {
+        for (const st of state) st.pct += st.w.pctPerWorkH * STEP_H;
+        left -= STEP_H;
+      }
+      t += STEP_H * 3600e3;
+    }
+    // Without any wait the 5-minute steps only add rounding.
+    limitAt = left > 0 ? null : waitH > 0 ? t : freeAt;
+  }
+  for (const w of windows) w.waitH = binding.get(w.key) ?? 0;
+
+  return {
+    remaining,
+    remainingFr: summary.fr.points.total - summary.fr.points.done,
+    remainingNfr: summary.nfr.points.total - summary.nfr.points.done,
+    done: all.points.done,
+    workH,
+    days,
+    hoursPerDay,
+    pace,
+    recentPace,
+    recentTicks,
+    workLeftH,
+    workLeftRecentH,
+    outputPerWorkH,
+    perCriterion,
+    needed,
+    withoutLimits: freeAt !== null ? new Date(freeAt).toISOString() : null,
+    withLimits: limitAt !== null ? new Date(limitAt).toISOString() : null,
+    /** Hours of waiting for limit resets in the simulation. */
+    waitH,
+    /** True when the usage limits were part of the estimate. */
+    limited: sim.length > 0,
+    windows,
+  };
+}
+
 // ---------------------------------------------------------------- all
 
 export function collect() {
   const { commits, bySpec } = collectCommits();
   const specs = collectSpecs(bySpec);
   const toolUses = [];
-  const tokens = collectTokens(toolUses);
+  const msgs = [];
+  const tokens = collectTokens(toolUses, msgs);
+  const summary = summarise(specs);
   return {
     workingOn: workingOn(specs, commits, toolUses),
     version: 3,
@@ -636,7 +789,8 @@ export function collect() {
       head: git("rev-parse", "--short", "HEAD"),
       dirty: git("status", "--porcelain").split("\n").filter(Boolean).length,
     },
-    summary: summarise(specs),
+    summary,
+    eta: eta(summary, msgs, toolUses, tokens.limits),
     specs,
     tests: collectTests(),
     tokens,

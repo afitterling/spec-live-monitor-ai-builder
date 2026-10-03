@@ -5,7 +5,7 @@ import { json, type HeadersFunction } from "@remix-run/node";
 import { useLoaderData, useRevalidator } from "@remix-run/react";
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { loadStatus } from "../lib/status.server";
-import type { FeedItem, Spec, SpecRef, Status, Tokens, WorkSpec } from "../lib/types";
+import type { Eta, FeedItem, Spec, SpecRef, Status, Tokens, WorkSpec } from "../lib/types";
 
 const POLL_MS = 5_000;
 /** No push for this long: nobody is working right now. */
@@ -297,6 +297,11 @@ function Dashboard({ status: d, now, loading }: { status: Status; now: number; l
     ["Criteria met", `${a.points.done} / ${a.points.total}`, `${a.requirements} numbered requirements`],
     ["Tests", String(t.web.cases + t.ipad.cases + t.browser.checks), `web ${t.web.cases} · iPad ${t.ipad.cases} · browser ${t.browser.checks}`],
     ["Model", (tok.currentModel ?? "–").replace(/^claude-/, ""), `last activity ${ago(tok.lastActivity, now)}`],
+    [
+      "ETA",
+      d.eta?.workLeftH != null ? `${hours(d.eta.workLeftH)}` : "–",
+      d.eta?.limited ? (d.eta.waitH > 0 ? `+ ${hours(d.eta.waitH)} waiting for limits` : "limits do not stop it") : "of work, limits unknown",
+    ],
     mainLimit
       ? [
           "Usage limit",
@@ -357,6 +362,8 @@ function Dashboard({ status: d, now, loading }: { status: Status; now: number; l
           })}
         </div>
       </section>
+
+      {d.eta && <EtaCard eta={d.eta} now={now} />}
 
       <section className="grid kpis" aria-label="Key figures">
         {kpis.map(([label, value, sub]) => (
@@ -633,6 +640,86 @@ function Dashboard({ status: d, now, loading }: { status: Status; now: number; l
         usage limits from the Claude Code status line.
       </footer>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------- ETA
+
+const hours = (h: number | null) => (h === null ? "–" : h < 1 ? `${Math.round(h * 60)} min` : `${h.toFixed(1)} h`);
+
+/** "in 3 h 36 min · Sat 18:36", in the viewer's time zone. */
+function when(iso: string | null, now: number) {
+  if (!iso) return "–";
+  const at = new Date(iso);
+  const day = at.toDateString() === new Date(now).toDateString() ? "today" : at.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+  return `${until(iso, now)} · ${day} ${at.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
+}
+
+function EtaCard({ eta: e, now }: { eta: Eta; now: number }) {
+  const waits = e.windows.filter((w) => w.waitH > 0);
+  return (
+    <section className="card eta" aria-labelledby="etaTitle" style={{ marginBottom: 12 }}>
+      <h2 id="etaTitle">Estimate to 100 %</h2>
+      <div className="eta-row">
+        <div className="eta-big">
+          <div className="label">Without limits</div>
+          <div className="value">{when(e.withoutLimits, now)}</div>
+          <div className="sub">
+            ≈ {hours(e.workLeftH)} of work at {e.pace?.toFixed(1) ?? "–"} criteria/h
+            {e.workLeftRecentH !== null && ` · at the pace of the last 3 h: ${hours(e.workLeftRecentH)}`}
+          </div>
+        </div>
+        <div className="eta-big">
+          <div className="label">With usage limits</div>
+          <div className="value">{e.limited ? when(e.withLimits, now) : "–"}</div>
+          <div className="sub">
+            {!e.limited
+              ? "No usable limit figures yet (status line, or too little use in the window)."
+              : waits.length
+                ? `waits ≈ ${hours(e.waitH)} for limit resets: ${waits.map((w) => limitName(w.key)).join(", ")}`
+                : "The limits do not stop the work: " +
+                  e.windows.filter((w) => w.neededPct !== null).map((w) => `${limitName(w.key)} needs ${Math.round(w.neededPct!)} % more`).join(", ")}
+          </div>
+        </div>
+      </div>
+      <dl className="eta-facts">
+        <dt>Remaining</dt>
+        <dd>{e.remaining} of {e.remaining + e.done} acceptance criteria (FR {e.remainingFr} · NFR {e.remainingNfr})</dd>
+        <dt>Pace</dt>
+        <dd>
+          {e.done} met in {hours(e.workH)} of active agent work{e.pace ? ` = ${e.pace.toFixed(1)}/h` : ""}
+          {e.recentPace ? ` · last 3 h: ${e.recentTicks} ticked = ${e.recentPace.toFixed(1)}/h` : ""}
+        </dd>
+        <dt>Tokens per criterion</dt>
+        <dd>{e.perCriterion ? `${fmt(Math.round(e.perCriterion.output))} output · ${fmt(Math.round(e.perCriterion.input))} input (incl. cache)` : "–"}</dd>
+        <dt>Tokens still needed</dt>
+        <dd>{e.needed ? `≈ ${fmt(e.needed.output)} output · ${fmt(e.needed.input)} input (incl. cache)` : "–"}</dd>
+      </dl>
+      {e.windows.length > 0 && (
+        <div className="scroll">
+          <table>
+            <thead>
+              <tr><th>Limit</th><th className="num">Used now</th><th className="num">Per hour of work</th><th className="num">Rest needs</th><th className="num">Wait</th></tr>
+            </thead>
+            <tbody>
+              {e.windows.map((w) => (
+                <tr key={w.key}>
+                  <td>{limitName(w.key)} <span className="dim">· resets {until(w.resetsAt, now)}</span></td>
+                  <td className="num">{w.usedPct.toFixed(0)} %</td>
+                  <td className="num">{w.pctPerWorkH === null ? "–" : `${w.pctPerWorkH.toFixed(1)} %`}</td>
+                  <td className="num">{w.neededPct === null ? "–" : `${w.neededPct.toFixed(0)} %`}</td>
+                  <td className="num">{w.waitH ? hours(w.waitH) : "none"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div className="dim" style={{ marginTop: 8, fontSize: 12 }}>
+        Rough: assumes the open criteria cost as much time and tokens as the met ones, and that the agent works on without a break. Limits are
+        per account; only this project's output tokens are seen and stand in for usage. "–" where a window holds too little use to measure.
+      </div>
+    </section>
   );
 }
 

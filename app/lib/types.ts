@@ -117,9 +117,46 @@ export interface Live {
   ticked: { id: string; index: number; at: string }[];
 }
 
+export interface EtaWindow {
+  key: string;
+  usedPct: number;
+  resetsAt: string | null;
+  lenH: number;
+  usedOutput: number;
+  pctPerMOutput: number | null;
+  neededPct: number | null;
+  pctPerWorkH: number | null;
+  waitH: number;
+}
+
+/** Estimate to 100 % of the acceptance criteria (version 3). */
+export interface Eta {
+  remaining: number;
+  remainingFr: number;
+  remainingNfr: number;
+  done: number;
+  workH: number;
+  days: number;
+  hoursPerDay: number | null;
+  pace: number | null;
+  recentPace: number | null;
+  recentTicks: number;
+  workLeftH: number | null;
+  workLeftRecentH: number | null;
+  outputPerWorkH: number | null;
+  perCriterion: { output: number; input: number } | null;
+  needed: { output: number; input: number } | null;
+  withoutLimits: string | null;
+  withLimits: string | null;
+  waitH: number;
+  limited: boolean;
+  windows: EtaWindow[];
+}
+
 export interface Status {
   version: number;
   generatedAt: string;
+  eta?: Eta | null;
   workingOn: {
     /** uncommitted: changes linked to specs · unlinked: changes, none linked · idle: nothing uncommitted. Absent in version 1. */
     mode?: "uncommitted" | "unlinked" | "idle";

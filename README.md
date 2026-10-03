@@ -28,6 +28,9 @@ The page shows:
   with spec and § links;
 - uncommitted work: changed files linked to specs, the open criteria of those
   specs as the tasks left;
+- an ETA to 100 % without and with the usage limits: hours of work at the
+  current pace, tokens per criterion and tokens still needed, the share of
+  each limit window the rest needs and any wait for a reset;
 - token usage per model and session, and how much of the Claude plan's usage
   limits (5-hour window, week) is used, in percent;
 - tables that sort by any column, ascending or descending, stable.
