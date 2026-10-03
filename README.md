@@ -18,6 +18,28 @@ This is a development tool, not part of the product.
 The collector expects to sit in the `sst-dev/` folder of the editr repository
 and reads the product specs from `../specs`.
 
+The page shows:
+
+- overall and per-group progress, every spec with its acceptance criteria as
+  checked or unchecked boxes, jumps to FRs, NFRs and groups, `#FR-021` links;
+- what is being worked on: uncommitted files linked to specs, the open
+  criteria of those specs as the tasks left, and the agent's recent activity;
+- token usage per model and session, and how much of the Claude plan's usage
+  limits (5-hour window, week) is used, in percent;
+- tables that sort by any column, ascending or descending, stable.
+
+## Usage limits
+
+The limits come from the Claude Code status line. Add it to
+`.claude/settings.local.json` of the editr repository:
+
+```json
+"statusLine": { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/sst-dev/scripts/statusline.mjs\"" }
+```
+
+It prints the model and the used percentages, and keeps the latest figures
+in `.sst/limits.json` for the next push. They need a Claude subscription.
+
 ## Commands
 
 Node >= 22, npm.
@@ -30,6 +52,23 @@ npm run build       # remix vite:build
 npm run deploy      # sst deploy --stage dev
 npm run collect     # collect the status locally
 npm run push        # collect and upload data.json to the deployed bucket
+```
+
+## Deploy
+
+With AWS credentials for the target account in the environment (for example
+`AWS_PROFILE`):
+
+```sh
+npm install
+npx sst deploy --stage dev    # same as: npm run deploy
+```
+
+The deploy prints two outputs: `url`, the CloudFront address of the status
+page, and `bucket`, the name of the data bucket. Then fill the page:
+
+```sh
+npm run push
 ```
 
 Deploy once before the first push: the bucket name comes from the deploy

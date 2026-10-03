@@ -39,4 +39,5 @@ work continues in the repository, without redeploying the page.
 ## Rebuild
 
 - **Push:** `sst-dev/scripts/push.mjs` (`--quiet` for hooks, `--throttle` for per-tool-call pushes).
+- **Status line:** `statusLine` in the same `.claude/settings.local.json` runs `sst-dev/scripts/statusline.mjs`, which records the usage limits for the next push.
 - **Hooks:** Claude Code `PostToolUse` (throttled) and `Stop` in `.claude/settings.local.json`, git `post-commit` in `.git/hooks/`, all running `sst-dev/scripts/push.mjs` in the background. Both hook locations are machine-local and not committed.

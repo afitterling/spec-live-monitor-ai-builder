@@ -49,15 +49,47 @@ export interface Tokens {
   cacheRead: number;
 }
 
+export interface WorkSpec {
+  id: string;
+  score: number;
+  /** The spec file itself has uncommitted changes. */
+  specFile: boolean;
+  /** Changed files its Rebuild section names. */
+  named: number;
+  /** Changed files that cite its ID. */
+  cited: number;
+  files: number;
+  lastChange: string | null;
+}
+
+/** The agent's tool calls in this project: names and counts only. */
+export interface Activity {
+  active: boolean;
+  lastAt: string | null;
+  lastTool: string | null;
+  session: string | null;
+  windowMin: number;
+  calls: number;
+  tools: { name: string; count: number }[];
+  edited: number;
+}
+
 export interface Status {
   version: number;
   generatedAt: string;
   workingOn: {
+    /** uncommitted: changes linked to specs · unlinked: changes, none linked · idle: nothing uncommitted. Absent in version 1. */
+    mode?: "uncommitted" | "unlinked" | "idle";
     reason: string;
     ids: string[];
     since?: string | null;
     changedFiles: number;
-    files?: { path: string; changedAt: string | null }[];
+    unlinkedFiles?: number;
+    files?: { path: string; changedAt: string | null; specs?: string[]; agentAt?: string | null }[];
+    /** Specs linked to the uncommitted files, strongest evidence first. */
+    specs?: WorkSpec[];
+    activity?: Activity;
+    lastDone?: { hash: string; subject: string; date: string; ids: string[] } | null;
   };
   repo: { name: string; branch: string; head: string; dirty: number };
   summary: {
@@ -75,6 +107,8 @@ export interface Status {
   tokens: {
     source: string;
     total: Tokens;
+    /** Share of the plan's usage limits used, as last seen by the status line. Absent in older documents. */
+    limits?: { at: string; windows: { key: string; usedPct: number; resetsAt: string | null }[] } | null;
     currentModel: string | null;
     lastActivity: string | null;
     byModel: (Tokens & { model: string })[];

@@ -4,6 +4,11 @@
 //   - test counts of both clients
 //   - token usage and models of the Claude Code sessions in this project
 //     (numbers, model names and timestamps only: no conversation content)
+//   - what is being worked on: uncommitted files, the specs they belong to
+//     with their open acceptance criteria, and the agent's recent tool calls
+//     (tool names and repository paths only)
+//   - how much of the plan's usage limits is used, in percent, as last seen by
+//     the status line (scripts/statusline.mjs)
 //   - recent commits
 //
 //   node scripts/collect.mjs            prints the JSON
@@ -17,6 +22,8 @@ import { fileURLToPath } from "node:url";
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const SPECS = join(ROOT, "specs");
 // Claude Code keeps one transcript folder per working directory.
+// Written by scripts/statusline.mjs.
+const LIMITS = fileURLToPath(new URL("../.sst/limits.json", import.meta.url));
 const TRANSCRIPTS = join(homedir(), ".claude", "projects", ROOT.replace(/\/+$/, "").replace(/[^A-Za-z0-9]/g, "-"));
 
 function walk(dir, match) {
@@ -174,7 +181,13 @@ function collectTests() {
 
 // ---------------------------------------------------------------- tokens
 
-function collectTokens() {
+/**
+ * Token usage of the transcripts. Tool calls of the assistant are added to
+ * `toolUses` as { at, name, session, path? }: the tool name, and for edits the
+ * repository path of the file. Nothing else of the call is kept.
+ */
+function collectTokens(toolUses = []) {
+  const seenTools = new Set();
   const files = walk(TRANSCRIPTS, (n) => n.endsWith(".jsonl"));
   // A message is written once per content block; the id makes it count once.
   const messages = new Map();
@@ -198,6 +211,18 @@ function collectTokens() {
       }
       const m = o.message;
       if (o.type !== "assistant" || !m?.usage || !m.id || !m.model || m.model.startsWith("<")) continue;
+      for (const c of Array.isArray(m.content) ? m.content : []) {
+        if (c?.type !== "tool_use" || !c.id || seenTools.has(c.id)) continue;
+        seenTools.add(c.id);
+        // MCP tools are named mcp__<server>__<tool>; the tool part is enough.
+        const use = { at: o.timestamp, name: String(c.name ?? "").split("__").pop().slice(0, 40), session };
+        const file = EDIT_TOOLS.has(c.name) ? c.input?.file_path ?? c.input?.notebook_path : null;
+        if (typeof file === "string") {
+          const rel = relative(ROOT, file);
+          if (rel && !rel.startsWith("..") && !rel.startsWith("/")) use.path = rel;
+        }
+        toolUses.push(use);
+      }
       const u = m.usage;
       messages.set(m.id, {
         model: m.model,
@@ -240,10 +265,16 @@ function collectTokens() {
       add(byHour.get(hour), m);
     }
   }
+  let limits = null;
+  try {
+    const l = JSON.parse(readFileSync(LIMITS, "utf8"));
+    limits = { at: l.at, windows: l.windows.map(({ key, usedPct, resetsAt }) => ({ key, usedPct, resetsAt })) };
+  } catch {}
   const latest = [...messages.values()].sort((a, b) => (a.at < b.at ? 1 : -1))[0];
   return {
     source: "Claude Code session transcripts of this project (usage numbers only)",
     total,
+    limits,
     currentModel: latest?.model ?? null,
     lastActivity: latest?.at ?? null,
     byModel: [...byModel].map(([model, t]) => ({ model, ...t })).sort((a, b) => b.output - a.output),
@@ -254,43 +285,137 @@ function collectTokens() {
   };
 }
 
-// ---------------------------------------------------------------- all
+// ---------------------------------------------------------------- working on
+
+const EDIT_TOOLS = new Set(["Edit", "Write", "NotebookEdit", "MultiEdit"]);
+const SPEC_ID = /\b(?:N?FR)-\d{3}\b/g;
+/** The agent counts as active when its last tool call is this recent. */
+const ACTIVE_MS = 10 * 60 * 1000;
+const RECENT_MS = 60 * 60 * 1000;
 
 /**
- * What is being worked on now: specs whose file has uncommitted changes, else
- * the specs of the latest commit that named any.
+ * What is being worked on now, and how sure that is.
+ *
+ * Every uncommitted file is linked to specs in three ways, strongest first:
+ * it is the spec file itself, a spec's Rebuild section names it, or the file
+ * cites the spec ID (code comments cite the requirement they implement). The
+ * specs are ranked by that evidence; their open acceptance criteria are the
+ * tasks still to do. Without uncommitted changes nothing is in progress, and
+ * the page says which commit finished last.
  */
-function workingOn(specs, commits) {
+function workingOn(specs, commits, toolUses) {
+  const now = Date.now();
+  const known = new Set(specs.map((s) => s.id));
   // Every file, also inside new folders, so a single edit shows up.
   const changed = git("status", "--porcelain", "--untracked-files=all")
     .split("\n")
     .filter(Boolean)
-    .map((l) => l.slice(3));
-  // Paths only, newest change first: the fine-grained view of the work in progress.
+    .map((l) => l.slice(3).replace(/^"|"$/g, ""))
+    // A rename shows as "old -> new".
+    .map((f) => f.split(" -> ").pop());
+
+  const recent = toolUses.filter((u) => u.at && now - Date.parse(u.at) < RECENT_MS);
+  const agentEdits = new Map();
+  for (const u of recent) if (u.path && (agentEdits.get(u.path) ?? "") < u.at) agentEdits.set(u.path, u.at);
+
   const files = changed
-    .map((f) => f.replace(/^"|"$/g, ""))
     .map((f) => {
+      const abs = join(ROOT, f);
       let mtime = 0;
+      let cited = [];
+      const own = specs.find((s) => s.file === f);
       try {
-        mtime = statSync(join(ROOT, f)).mtimeMs;
+        const st = statSync(abs);
+        mtime = st.mtimeMs;
+        // Only the IDs are kept, never the content.
+        if (!own && st.isFile() && st.size < 2_000_000) {
+          cited = [...new Set(readFileSync(abs, "utf8").match(SPEC_ID) ?? [])].filter((id) => known.has(id));
+        }
       } catch {}
-      return { path: f, changedAt: mtime ? new Date(mtime).toISOString() : null };
+      const named = specs.filter((s) => s.rebuild.some((r) => r.includes(f))).map((s) => s.id);
+      return {
+        path: f,
+        changedAt: mtime ? new Date(mtime).toISOString() : null,
+        specFile: own?.id ?? null,
+        named,
+        cited,
+        specs: [...new Set([own?.id, ...named, ...cited].filter(Boolean))],
+        agentAt: agentEdits.get(f) ?? null,
+      };
     })
-    .sort((a, b) => (a.changedAt ?? "") < (b.changedAt ?? "") ? 1 : -1)
-    .slice(0, 25);
-  const base = { changedFiles: changed.length, files };
-  const byFile = specs.filter((s) => changed.some((f) => f === s.file || f.endsWith(basename(s.file))));
-  if (byFile.length) return { reason: "uncommitted changes", ids: byFile.map((s) => s.id), ...base };
-  const last = commits.find((c) => c.specs.length);
-  return { reason: last ? `last commit ${last.hash}` : "none", ids: last?.specs ?? [], since: last?.date ?? null, ...base };
+    .sort((a, b) => ((a.changedAt ?? "") < (b.changedAt ?? "") ? 1 : -1));
+
+  const ranked = new Map();
+  for (const f of files) {
+    const add = (id, key, weight) => {
+      const r = ranked.get(id) ?? { id, score: 0, specFile: false, named: 0, cited: 0, files: 0, lastChange: null };
+      if (key === "specFile") r.specFile = true;
+      else r[key]++;
+      r.score += weight;
+      ranked.set(id, r);
+    };
+    if (f.specFile) add(f.specFile, "specFile", 3);
+    for (const id of f.named) add(id, "named", 2);
+    for (const id of f.cited) add(id, "cited", 1);
+    for (const id of f.specs) {
+      const r = ranked.get(id);
+      r.files++;
+      if ((r.lastChange ?? "") < (f.changedAt ?? "")) r.lastChange = f.changedAt;
+    }
+  }
+  // Open work before finished specs whose files are touched again.
+  const finished = new Set(specs.filter((s) => s.status === "Implemented").map((s) => s.id));
+  const inProgress = [...ranked.values()]
+    .sort(
+      (a, b) =>
+        Number(finished.has(a.id)) - Number(finished.has(b.id)) ||
+        b.score - a.score ||
+        ((a.lastChange ?? "") < (b.lastChange ?? "") ? 1 : -1),
+    )
+    .slice(0, 8);
+
+  const last = toolUses.reduce((m, u) => (u.at && u.at > (m?.at ?? "") ? u : m), null);
+  const counts = new Map();
+  for (const u of recent) counts.set(u.name, (counts.get(u.name) ?? 0) + 1);
+  const activity = {
+    active: !!last && now - Date.parse(last.at) < ACTIVE_MS,
+    lastAt: last?.at ?? null,
+    lastTool: last?.name ?? null,
+    session: last?.session.slice(0, 8) ?? null,
+    windowMin: RECENT_MS / 60000,
+    calls: recent.length,
+    tools: [...counts].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 8),
+    edited: agentEdits.size,
+  };
+
+  const base = {
+    changedFiles: changed.length,
+    unlinkedFiles: files.filter((f) => !f.specs.length).length,
+    files: files.slice(0, 40).map(({ path, changedAt, specs: ids, agentAt }) => ({ path, changedAt, specs: ids, agentAt })),
+    specs: inProgress,
+    activity,
+  };
+  if (inProgress.length) return { mode: "uncommitted", reason: "uncommitted changes", ids: inProgress.map((r) => r.id), ...base };
+  const lastCommit = commits.find((c) => c.specs.length);
+  return {
+    mode: changed.length ? "unlinked" : "idle",
+    reason: lastCommit ? `last commit ${lastCommit.hash}` : "none",
+    ids: [],
+    lastDone: lastCommit ? { hash: lastCommit.hash, subject: lastCommit.subject, date: lastCommit.date, ids: lastCommit.specs } : null,
+    ...base,
+  };
 }
+
+// ---------------------------------------------------------------- all
 
 export function collect() {
   const { commits, bySpec } = collectCommits();
   const specs = collectSpecs(bySpec);
+  const toolUses = [];
+  const tokens = collectTokens(toolUses);
   return {
-    workingOn: workingOn(specs, commits),
-    version: 1,
+    workingOn: workingOn(specs, commits, toolUses),
+    version: 2,
     generatedAt: new Date().toISOString(),
     repo: {
       name: "editr",
@@ -301,7 +426,7 @@ export function collect() {
     summary: summarise(specs),
     specs,
     tests: collectTests(),
-    tokens: collectTokens(),
+    tokens,
     commits: commits.slice(0, 40),
   };
 }
