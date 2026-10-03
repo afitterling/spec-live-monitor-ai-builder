@@ -31,4 +31,9 @@ try {
     .filter(Boolean)
     .join(" · ");
 } catch {}
+// A failing status push is otherwise silent (the hooks swallow it): say so here.
+try {
+  const failed = JSON.parse(readFileSync(new URL("last-push-error", dir), "utf8"));
+  if (failed?.reason) line = [line, `⚠ status page not updating — ${failed.reason}`].filter(Boolean).join(" · ");
+} catch {}
 console.log(line);

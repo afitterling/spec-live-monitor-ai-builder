@@ -6,7 +6,7 @@
 //   node scripts/push.mjs --quiet --throttle at most one push per THROTTLE_S
 //                                            seconds (for per-tool-call hooks)
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { collect } from "./collect.mjs";
 
 const quiet = process.argv.includes("--quiet");
@@ -14,6 +14,9 @@ const throttle = process.argv.includes("--throttle");
 const THROTTLE_S = 3;
 const outputsFile = new URL("../.sst/outputs.json", import.meta.url);
 const stampFile = new URL("../.sst/last-push", import.meta.url);
+// Why the last push failed. The hooks run quietly and swallow errors, so this
+// file is how a failure becomes visible: the status line shows it.
+const errorFile = new URL("../.sst/last-push-error", import.meta.url);
 
 if (!existsSync(outputsFile)) {
   if (!quiet) console.error("Not deployed yet: run `npm run deploy` first.");
@@ -26,15 +29,24 @@ writeFileSync(stampFile, new Date().toISOString());
 const { bucket, url } = JSON.parse(readFileSync(outputsFile, "utf8"));
 const status = collect();
 
-await new S3Client({ region: "eu-central-1" }).send(
-  new PutObjectCommand({
-    Bucket: bucket,
-    Key: "data.json",
-    Body: JSON.stringify(status),
-    ContentType: "application/json",
-    CacheControl: "no-store",
-  }),
-);
+try {
+  await new S3Client({ region: "eu-central-1" }).send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: "data.json",
+      Body: JSON.stringify(status),
+      ContentType: "application/json",
+      CacheControl: "no-store",
+    }),
+  );
+  rmSync(errorFile, { force: true });
+} catch (err) {
+  const expired = /expired|sso|credential/i.test(`${err?.name} ${err?.message}`);
+  const reason = expired ? "AWS sign-in expired: run `aws sso login`" : `${err?.name ?? "Error"}: ${String(err?.message ?? err).slice(0, 160)}`;
+  writeFileSync(errorFile, JSON.stringify({ at: new Date().toISOString(), reason }));
+  if (!quiet) console.error(`Status not pushed. ${reason}`);
+  process.exit(quiet ? 0 : 1);
+}
 
 if (!quiet) {
   const a = status.summary.all;
