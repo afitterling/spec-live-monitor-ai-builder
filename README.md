@@ -28,6 +28,25 @@ The page shows:
   limits (5-hour window, week) is used, in percent;
 - tables that sort by any column, ascending or descending, stable.
 
+## Screenshots
+
+Overall progress, key figures and what is being worked on, with the open
+acceptance criteria of each linked spec as tasks:
+
+![Overview and working on now](docs/screenshots/01-overview-working-on.png)
+
+Coverage by group, usage limits in percent, token usage per model and session:
+
+![Coverage, usage limits and token usage](docs/screenshots/02-coverage-tokens-limits.png)
+
+All specs, sortable by every column, filterable by kind, state and group:
+
+![Spec list](docs/screenshots/03-spec-list.png)
+
+The NFRs, output tokens per hour and recent commits:
+
+![NFRs, activity and commits](docs/screenshots/04-nfrs-activity-commits.png)
+
 ## Usage limits
 
 The limits come from the Claude Code status line. Add it to
