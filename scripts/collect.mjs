@@ -69,6 +69,18 @@ function bullets(body) {
   return items;
 }
 
+/** Numbered requirements ("3. …", "11a. …") with their continuation lines, as { n, text }. */
+function numbered(body) {
+  const items = [];
+  for (const line of body.split("\n")) {
+    const m = /^(\d+[a-z]?)\.\s+(.+)$/.exec(line);
+    if (m) items.push({ n: m[1], text: m[2].trim() });
+    else if (/^\s+\S/.test(line) && items.length) items[items.length - 1].text += " " + line.trim();
+    else if (/^\S/.test(line) && !/^#/.test(line)) continue;
+  }
+  return items;
+}
+
 function parseSpec(path) {
   const text = readFileSync(path, "utf8");
   const head = /^# ((?:N?FR)-\d+)\s+[—-]\s+(.+)$/m.exec(text);
@@ -93,6 +105,7 @@ function parseSpec(path) {
     updated: field("Last updated"),
     file: relative(ROOT, path),
     requirements: (requirementBody.match(/^\d+\.\s/gm) ?? []).length,
+    reqs: numbered(requirementBody),
     criteria,
     rebuild,
     started: rebuild.length > 0 || status === "Implemented",
@@ -183,11 +196,12 @@ function collectTests() {
 
 /**
  * Token usage of the transcripts. Tool calls of the assistant are added to
- * `toolUses` as { at, name, session, path? }: the tool name, and for edits the
- * repository path of the file. Nothing else of the call is kept.
+ * `toolUses` (see toolUse()); their outcome (failed or not) comes from the
+ * matching tool result. Nothing else of a call or its result is kept.
  */
 function collectTokens(toolUses = []) {
   const seenTools = new Set();
+  const failed = new Map();
   const files = walk(TRANSCRIPTS, (n) => n.endsWith(".jsonl"));
   // A message is written once per content block; the id makes it count once.
   const messages = new Map();
@@ -201,7 +215,16 @@ function collectTokens(toolUses = []) {
     } catch {
       continue;
     }
+    const agentFile = agent ? basename(file, ".jsonl") : null;
     for (const line of lines) {
+      if (line.includes('"tool_result"')) {
+        try {
+          for (const c of JSON.parse(line).message?.content ?? []) {
+            if (c?.type === "tool_result" && c.tool_use_id) failed.set(c.tool_use_id, c.is_error === true);
+          }
+        } catch {}
+        continue;
+      }
       if (!line.includes('"usage"')) continue;
       let o;
       try {
@@ -214,14 +237,7 @@ function collectTokens(toolUses = []) {
       for (const c of Array.isArray(m.content) ? m.content : []) {
         if (c?.type !== "tool_use" || !c.id || seenTools.has(c.id)) continue;
         seenTools.add(c.id);
-        // MCP tools are named mcp__<server>__<tool>; the tool part is enough.
-        const use = { at: o.timestamp, name: String(c.name ?? "").split("__").pop().slice(0, 40), session };
-        const file = EDIT_TOOLS.has(c.name) ? c.input?.file_path ?? c.input?.notebook_path : null;
-        if (typeof file === "string") {
-          const rel = relative(ROOT, file);
-          if (rel && !rel.startsWith("..") && !rel.startsWith("/")) use.path = rel;
-        }
-        toolUses.push(use);
+        toolUses.push(toolUse(c, o.timestamp, session, agentFile));
       }
       const u = m.usage;
       messages.set(m.id, {
@@ -270,6 +286,7 @@ function collectTokens(toolUses = []) {
     const l = JSON.parse(readFileSync(LIMITS, "utf8"));
     limits = { at: l.at, windows: l.windows.map(({ key, usedPct, resetsAt }) => ({ key, usedPct, resetsAt })) };
   } catch {}
+  for (const u of toolUses) if (failed.has(u.id)) u.failed = failed.get(u.id);
   const latest = [...messages.values()].sort((a, b) => (a.at < b.at ? 1 : -1))[0];
   return {
     source: "Claude Code session transcripts of this project (usage numbers only)",
@@ -285,9 +302,74 @@ function collectTokens(toolUses = []) {
   };
 }
 
-// ---------------------------------------------------------------- working on
+// ---------------------------------------------------------------- agent actions
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "NotebookEdit", "MultiEdit"]);
+const READ_TOOLS = new Set(["Read", "ctx_read", "ctx_tree", "ctx_glob", "Glob", "Grep", "ctx_search"]);
+const SHELL_TOOLS = new Set(["Bash", "ctx_shell"]);
+/** "FR-031 §3", "NFR-030" — how code comments and commits cite the specs. */
+const SPEC_REF = /\b(N?FR-\d{3})(?:\s?§\s?(\d+[a-z]?))?/g;
+
+/** What a shell command does, as a fixed label: the command itself never leaves the machine. */
+const COMMANDS = [
+  [/\bsst (deploy|remove)\b|\bdeploy(:\w+)?\b/, "deploy"],
+  [/\bvitest\b|\bnpm (run )?test\b|\bxcodebuild\b[^|;&]*\btest\b/, "tests"],
+  [/cdp\.mjs|-check\.js/, "browser check"],
+  [/\btsc\b|\btypecheck\b/, "typecheck"],
+  [/\bxcodegen\b|\bxcodebuild\b|\bnpm run build\b|vite:build/, "build"],
+  [/\bgit commit\b/, "commit"],
+  [/\bgit push\b/, "push to git"],
+  [/\bpush\.mjs\b|\bnpm run push\b/, "status push"],
+  [/\bnpm (ci|install|i)\b/, "install"],
+  [/\bgit (status|diff|log|show)\b/, "git look-up"],
+  [/\bnpm run dev\b|\bsst dev\b/, "dev server"],
+];
+const commandLabel = (cmd) => (COMMANDS.find(([re]) => re.test(cmd)) ?? [null, "shell"])[1];
+
+const repoPath = (file) => {
+  if (typeof file !== "string") return null;
+  const rel = relative(ROOT, file);
+  return rel && !rel.startsWith("..") && !rel.startsWith("/") ? rel : null;
+};
+
+/**
+ * One tool call, reduced to what the status page may show: tool name, kind,
+ * repository paths, spec IDs and § numbers written by an edit, the command
+ * label of a shell call, and for spec files which criteria an edit ticked
+ * (kept as text only until they are matched to their index).
+ */
+function toolUse(c, at, session, agentFile) {
+  const name = String(c.name ?? "").split("__").pop().slice(0, 40);
+  const input = c.input ?? {};
+  const use = { id: c.id, at, name, session, agent: agentFile, kind: "other" };
+  if (EDIT_TOOLS.has(name)) {
+    use.kind = name === "Write" ? "write" : "edit";
+    use.path = repoPath(input.file_path ?? input.notebook_path);
+    const written = [input.new_string, input.content, input.new_source, ...(input.edits ?? []).map((e) => e?.new_string)]
+      .filter((t) => typeof t === "string")
+      .join("\n");
+    const before = [input.old_string, ...(input.edits ?? []).map((e) => e?.old_string)].filter((t) => typeof t === "string").join("\n");
+    const refs = new Map();
+    for (const m of written.matchAll(SPEC_REF)) refs.set(`${m[1]}§${m[2] ?? ""}`, { id: m[1], sec: m[2] ?? null });
+    use.refs = [...refs.values()].slice(0, 12);
+    if (use.path && /^specs\/(FRs|NFRs)\//.test(use.path)) {
+      use.ticked = [...written.matchAll(/^- \[[xX]\] (.+)$/gm)]
+        .map((m) => m[1].trim())
+        .filter((t) => before.includes(`- [ ] ${t}`));
+    }
+  } else if (READ_TOOLS.has(name)) {
+    use.kind = name.includes("search") || name === "Grep" || name.includes("glob") || name === "Glob" ? "search" : "read";
+    use.path = repoPath(input.file_path ?? input.path ?? (Array.isArray(input.paths) ? input.paths[0] : null));
+  } else if (SHELL_TOOLS.has(name)) {
+    use.kind = "shell";
+    use.label = typeof input.command === "string" ? commandLabel(input.command) : "shell";
+  } else if (name === "Agent" || name === "Task") {
+    use.kind = "subagent";
+  }
+  return use;
+}
+
+// ---------------------------------------------------------------- working on
 const SPEC_ID = /\b(?:N?FR)-\d{3}\b/g;
 /** The agent counts as active when its last tool call is this recent. */
 const ACTIVE_MS = 10 * 60 * 1000;
@@ -306,6 +388,7 @@ const RECENT_MS = 60 * 60 * 1000;
 function workingOn(specs, commits, toolUses) {
   const now = Date.now();
   const known = new Set(specs.map((s) => s.id));
+  const specByFile = new Map(specs.map((s) => [s.file, s]));
   // Every file, also inside new folders, so a single edit shows up.
   const changed = git("status", "--porcelain", "--untracked-files=all")
     .split("\n")
@@ -388,7 +471,10 @@ function workingOn(specs, commits, toolUses) {
     edited: agentEdits.size,
   };
 
+  const live = liveWork(specs, toolUses, specByFile, known, now);
+
   const base = {
+    live,
     changedFiles: changed.length,
     unlinkedFiles: files.filter((f) => !f.specs.length).length,
     files: files.slice(0, 40).map(({ path, changedAt, specs: ids, agentAt }) => ({ path, changedAt, specs: ids, agentAt })),
@@ -406,6 +492,133 @@ function workingOn(specs, commits, toolUses) {
   };
 }
 
+/** The agent counts as working on a spec when it touched it this recently. */
+const FOCUS_MS = 15 * 60 * 1000;
+const HALF_LIFE_MS = 3 * 60 * 1000;
+const FEED_SIZE = 30;
+
+/**
+ * Live view of the latest session: what the agent does right now, in which
+ * spec and which numbered requirement (§), and a feed of its last actions.
+ *
+ * Evidence per action, strongest first: an edit that writes "FR-031 §3"
+ * (requirement 3 of FR-031), an edit that writes a spec ID, reading or editing
+ * the spec file itself, editing a file whose code cites the spec.
+ */
+function liveWork(specs, toolUses, specByFile, known, now) {
+  const last = toolUses.reduce((m, u) => (u.at && u.at > (m?.at ?? "") ? u : m), null);
+  if (!last) return null;
+  const session = last.session;
+  const uses = toolUses.filter((u) => u.session === session && u.at).sort((a, b) => (a.at < b.at ? -1 : 1));
+
+  const citedCache = new Map();
+  const citedBy = (path) => {
+    if (!citedCache.has(path)) {
+      let ids = [];
+      try {
+        const abs = join(ROOT, path);
+        if (statSync(abs).size < 2_000_000) ids = [...new Set(readFileSync(abs, "utf8").match(/\bN?FR-\d{3}\b/g) ?? [])].filter((id) => known.has(id));
+      } catch {}
+      citedCache.set(path, ids);
+    }
+    return citedCache.get(path);
+  };
+
+  /** Spec links of one action: [{ id, sec, how }]. */
+  const linksOf = (u) => {
+    const own = u.path ? specByFile.get(u.path) : null;
+    if (own) return [{ id: own.id, sec: null, how: "spec" }];
+    const refs = (u.refs ?? []).filter((r) => known.has(r.id)).map((r) => ({ ...r, how: r.sec ? "section" : "id" }));
+    if (refs.length) return refs;
+    if (u.kind === "edit" || u.kind === "write") return citedBy(u.path ?? "").slice(0, 4).map((id) => ({ id, sec: null, how: "file" }));
+    return [];
+  };
+
+  // Focus: weigh the links of the last FOCUS_MS; an action loses half its
+  // weight every HALF_LIFE_MS, so the headline follows the current step.
+  const WEIGHT = { section: 3, id: 2, spec: 2, file: 0.5 };
+  const focus = new Map();
+  const ticked = [];
+  for (const u of uses) {
+    const age = now - Date.parse(u.at);
+    const own = u.path ? specByFile.get(u.path) : null;
+    for (const t of u.ticked ?? []) {
+      const index = own?.criteria.findIndex((c) => c.text === t) ?? -1;
+      if (own && index >= 0) ticked.push({ id: own.id, index, at: u.at });
+    }
+    if (age > FOCUS_MS) continue;
+    const fresh = 0.5 ** (age / HALF_LIFE_MS);
+    for (const l of linksOf(u)) {
+      const f = focus.get(l.id) ?? { id: l.id, score: 0, lastAt: null, secs: new Map(), files: new Map() };
+      f.score += WEIGHT[l.how] * fresh;
+      if ((f.lastAt ?? "") < u.at) f.lastAt = u.at;
+      if (l.sec) {
+        const s = f.secs.get(l.sec) ?? { sec: l.sec, count: 0, lastAt: null };
+        s.count++;
+        s.lastAt = u.at;
+        f.secs.set(l.sec, s);
+      }
+      if (u.path && (u.kind === "edit" || u.kind === "write")) f.files.set(u.path, u.at);
+      focus.set(l.id, f);
+    }
+  }
+  const ranked = [...focus.values()]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5)
+    .map((f) => {
+      const spec = specs.find((s) => s.id === f.id);
+      return {
+        id: f.id,
+        score: Math.round(f.score * 100) / 100,
+        lastAt: f.lastAt,
+        secs: [...f.secs.values()]
+          .sort((a, b) => (a.lastAt < b.lastAt ? 1 : -1))
+          .slice(0, 5)
+          .map((s) => ({ ...s, text: spec?.reqs.find((r) => r.n === s.sec)?.text ?? null })),
+        files: [...f.files].sort((a, b) => (a[1] < b[1] ? 1 : -1)).slice(0, 4).map(([path]) => path),
+      };
+    });
+
+  // Feed: newest first, repeated identical actions folded into one row.
+  const feed = [];
+  for (const u of [...uses].reverse()) {
+    const links = linksOf(u).filter((l) => l.how !== "file" || u.kind !== "read");
+    const prev = feed[feed.length - 1];
+    const key = `${u.kind}|${u.name}|${u.path ?? ""}|${u.label ?? ""}`;
+    if (prev && prev.key === key && prev.agent === !!u.agent) {
+      prev.count++;
+      for (const l of links) if (!prev.specs.some((p) => p.id === l.id && p.sec === l.sec)) prev.specs.push({ id: l.id, sec: l.sec });
+      continue;
+    }
+    if (feed.length >= FEED_SIZE) break;
+    feed.push({
+      key,
+      at: u.at,
+      kind: u.kind,
+      tool: u.name,
+      path: u.path ?? null,
+      label: u.label ?? null,
+      agent: !!u.agent,
+      count: 1,
+      // true: failed · false: finished · null: no result yet (still running)
+      failed: u.failed ?? null,
+      specs: links.slice(0, 6).map((l) => ({ id: l.id, sec: l.sec })),
+    });
+  }
+  const agentsActive = new Set(uses.filter((u) => u.agent && now - Date.parse(u.at) < 2 * 60 * 1000).map((u) => u.agent)).size;
+
+  return {
+    session: session.slice(0, 8),
+    active: now - Date.parse(last.at) < ACTIVE_MS,
+    lastAt: last.at,
+    running: feed[0]?.failed === null && feed[0]?.kind === "shell" ? feed[0].label : null,
+    agentsActive,
+    focus: ranked,
+    feed: feed.map(({ key, ...f }) => f),
+    ticked: ticked.filter((t) => now - Date.parse(t.at) < RECENT_MS).slice(-10).reverse(),
+  };
+}
+
 // ---------------------------------------------------------------- all
 
 export function collect() {
@@ -415,7 +628,7 @@ export function collect() {
   const tokens = collectTokens(toolUses);
   return {
     workingOn: workingOn(specs, commits, toolUses),
-    version: 2,
+    version: 3,
     generatedAt: new Date().toISOString(),
     repo: {
       name: "editr",

@@ -1,13 +1,13 @@
 // The status page: every spec with its coverage, overall progress, what is
-// being worked on, tests, tokens, usage limits and model. Re-reads the status
-// every 15 s. Every table sorts by any column, stable, ascending or descending.
+// being worked on (live: which spec, which requirement, which action), tests,
+// tokens, usage limits and model. Re-reads the status every 5 s. Every table sorts by any column, stable, ascending or descending.
 import { json, type HeadersFunction } from "@remix-run/node";
 import { useLoaderData, useRevalidator } from "@remix-run/react";
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { loadStatus } from "../lib/status.server";
-import type { Spec, Status, Tokens, WorkSpec } from "../lib/types";
+import type { FeedItem, Spec, SpecRef, Status, Tokens, WorkSpec } from "../lib/types";
 
-const POLL_MS = 15_000;
+const POLL_MS = 5_000;
 /** No push for this long: nobody is working right now. */
 const STALE_MS = 30 * 60 * 1000;
 
@@ -205,10 +205,10 @@ export default function StatusPage() {
       </div>
     );
   }
-  return <Dashboard status={status as Status} now={now} />;
+  return <Dashboard status={status as Status} now={now} loading={revalidator.state !== "idle"} />;
 }
 
-function Dashboard({ status: d, now }: { status: Status; now: number }) {
+function Dashboard({ status: d, now, loading }: { status: Status; now: number; loading: boolean }) {
   const [open, setOpen] = useState<Set<string>>(() => new Set());
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState<"all" | "FR" | "NFR">("all");
@@ -284,6 +284,11 @@ function Dashboard({ status: d, now }: { status: Status; now: number }) {
   const models = useSort(tok.byModel, MODEL_KEYS);
   const sessions = useSort(tok.sessions, SESSION_KEYS);
 
+  // Requirements the agent works on right now, per spec: highlighted in the details.
+  const liveSecs = new Map<string, Set<string>>(
+    (d.workingOn.live?.active ? d.workingOn.live.focus : []).map((f) => [f.id, new Set(f.secs.map((x) => x.sec))]),
+  );
+
   const limits = tok.limits?.windows ?? [];
   const mainLimit = limits.find((w) => w.key === "five_hour") ?? limits[0];
 
@@ -309,7 +314,7 @@ function Dashboard({ status: d, now }: { status: Status; now: number }) {
       <header>
         <h1>editr — build status</h1>
         <span className="live" aria-live="polite">
-          <span className={`dot${stale ? " stale" : ""}`} />
+          {loading ? <span className="spin small" aria-label="Loading" /> : <span className={`dot${stale ? " stale" : ""}`} />}
           updated {ago(d.generatedAt, now)}
         </span>
         <span className="dim">
@@ -326,6 +331,8 @@ function Dashboard({ status: d, now }: { status: Status; now: number }) {
         <a href="#tokTitle">Tokens &amp; limits</a>
         <a href="#comTitle">Commits</a>
       </nav>
+
+      <NowBanner d={d} now={now} jump={jump} />
 
       <section className="card hero" aria-labelledby="overall">
         <div className="hero-row">
@@ -552,6 +559,22 @@ function Dashboard({ status: d, now }: { status: Status; now: number }) {
                                 </li>
                               ))}
                             </ul>
+                            {s.reqs && s.reqs.length > 0 && (
+                              <>
+                                <h3>Requirements</h3>
+                                <ol className="reqs">
+                                  {s.reqs.map((r) => {
+                                    const live = liveSecs.get(s.id)?.has(r.n);
+                                    return (
+                                      <li key={r.n} className={live ? "now" : undefined}>
+                                        <span className="sec">§{r.n}</span>
+                                        <span><Md text={r.text} />{live && <span className="pill Started now-pill">now</span>}</span>
+                                      </li>
+                                    );
+                                  })}
+                                </ol>
+                              </>
+                            )}
                             <h3>Rebuild</h3>
                             {s.rebuild.length ? (
                               <ul>{s.rebuild.map((r, i) => <li key={i}><Md text={r} /></li>)}</ul>
@@ -613,6 +636,146 @@ function Dashboard({ status: d, now }: { status: Status; now: number }) {
   );
 }
 
+// ---------------------------------------------------------------- live
+
+const COMMAND_VERB: Record<string, string> = {
+  tests: "Running tests",
+  typecheck: "Type-checking",
+  build: "Building",
+  deploy: "Deploying",
+  commit: "Committing",
+  "push to git": "Pushing to git",
+  "browser check": "Checking in the browser",
+  "status push": "Pushing the status",
+  install: "Installing packages",
+  "git look-up": "Looking at git",
+  "dev server": "Starting the dev server",
+  shell: "Running a command",
+};
+
+function verb(f: Pick<FeedItem, "kind" | "label" | "tool">) {
+  switch (f.kind) {
+    case "edit": return "Editing";
+    case "write": return "Writing";
+    case "read": return "Reading";
+    case "search": return "Searching";
+    case "shell": return COMMAND_VERB[f.label ?? "shell"] ?? "Running a command";
+    case "subagent": return "Starting a subagent";
+    default: return f.tool;
+  }
+}
+
+const shortText = (t: string, n = 170) => (t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t);
+
+function RefChips({ refs, jump }: { refs: SpecRef[]; jump: (id: string) => void }) {
+  return (
+    <>
+      {refs.map((r) => (
+        <button type="button" className="ref" key={`${r.id}${r.sec}`} onClick={() => jump(r.id)} title={`Open ${r.id}`}>
+          {r.id}{r.sec ? ` §${r.sec}` : ""}
+        </button>
+      ))}
+    </>
+  );
+}
+
+/** The headline: which spec, which requirement, which action, right now. */
+function NowBanner({ d, now, jump }: { d: Status; now: number; jump: (id: string) => void }) {
+  const live = d.workingOn.live;
+  if (!live) return null;
+  const top = live.focus[0];
+  const spec = top ? d.specs.find((s) => s.id === top.id) : undefined;
+  const sec = top?.secs[0];
+  const action = live.feed[0];
+  const others = live.focus.slice(1);
+  const lastTick = live.ticked[0];
+  const tickSpec = lastTick ? d.specs.find((s) => s.id === lastTick.id) : undefined;
+  return (
+    <section className={`card nowbar${live.active ? " active" : ""}`} aria-live="polite" aria-labelledby="nowbarTitle">
+      <div className="nowbar-head">
+        {live.active ? <span className="spin" aria-hidden="true" /> : <span className="dot stale" aria-hidden="true" />}
+        <h2 id="nowbarTitle">{live.active ? "Working on" : `Idle since ${ago(live.lastAt, now)} — last worked on`}</h2>
+        {spec ? (
+          <button type="button" className="link nowbar-spec" onClick={() => jump(spec.id)}>
+            {spec.id} · {spec.title}
+          </button>
+        ) : (
+          <span className="dim">no spec named in the last 15 minutes</span>
+        )}
+        {spec && <span className="num">{spec.points.done}/{spec.points.total} criteria</span>}
+      </div>
+      {spec && (
+        <div className="nowbar-point">
+          {sec ? (
+            <>
+              <span className="sec big">§{sec.sec}</span>
+              <span>{sec.text ? <Md text={shortText(sec.text, 260)} /> : "requirement not found in the spec"}</span>
+            </>
+          ) : (
+            <span className="dim">The edits name the spec but no single requirement (§) yet.</span>
+          )}
+        </div>
+      )}
+      {top && top.secs.length > 1 && (
+        <div className="nowbar-line dim">
+          Also touched in {top.id}: {top.secs.slice(1).map((x) => `§${x.sec}`).join(", ")}
+        </div>
+      )}
+      {action && (
+        <div className="nowbar-line">
+          {live.running && <span className="spin small" aria-hidden="true" />}
+          <b>{live.active ? "Right now" : "Last action"}:</b> {verb(action)}
+          {action.path && <> <code>{action.path}</code></>}
+          {action.count > 1 && <span className="dim"> ×{action.count}</span>}
+          {action.agent && <span className="pf on">subagent</span>}
+          <span className="dim"> · {ago(action.at, now)}</span>
+          {live.agentsActive > 0 && <span className="chip">{live.agentsActive} subagent{live.agentsActive > 1 ? "s" : ""} working</span>}
+        </div>
+      )}
+      {lastTick && tickSpec && (
+        <div className="nowbar-line">
+          <span className="box tick" aria-hidden="true">✓</span>
+          Last checked: <button type="button" className="link" onClick={() => jump(tickSpec.id)}>{tickSpec.id}</button> criterion {lastTick.index + 1}{" "}
+          <span className="dim">“{shortText(tickSpec.criteria[lastTick.index]?.text ?? "", 110)}” · {ago(lastTick.at, now)}</span>
+        </div>
+      )}
+      {others.length > 0 && (
+        <div className="nowbar-line dim">
+          Also in the last 15 minutes:{" "}
+          <RefChips refs={others.flatMap((o): SpecRef[] => (o.secs.length ? o.secs.slice(0, 2).map((x) => ({ id: o.id, sec: x.sec })) : [{ id: o.id, sec: null }]))} jump={jump} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function Feed({ d, now, jump }: { d: Status; now: number; jump: (id: string) => void }) {
+  const live = d.workingOn.live;
+  if (!live || live.feed.length === 0) return null;
+  return (
+    <details className="files" open>
+      <summary>Live feed — the agent's last actions in session <code>{live.session}</code>, newest first</summary>
+      <ol className="feed" aria-label="Agent actions, newest first">
+        {live.feed.map((f, i) => (
+          <li key={`${f.at}${i}`} className={f.kind}>
+            <span className="state" aria-label={f.failed === null ? "running" : f.failed ? "failed" : "done"}>
+              {f.failed === null ? <span className="spin small" /> : f.failed ? <span className="err">✗</span> : <span className="ok">✓</span>}
+            </span>
+            <span className="what">
+              {verb(f)}
+              {f.path && <> <code>{f.path}</code></>}
+              {f.count > 1 && <span className="dim"> ×{f.count}</span>}
+              {f.agent && <span className="pf on">subagent</span>}
+            </span>
+            <span className="refs"><RefChips refs={f.specs} jump={jump} /></span>
+            <span className="dim when">{ago(f.at, now)}</span>
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
+}
+
 // ---------------------------------------------------------------- working on
 
 /** Why a spec counts as in progress, in words. */
@@ -638,7 +801,7 @@ function WorkingOn({ d, now, jump }: { d: Status; now: number; jump: (id: string
   return (
     <section className="card" style={{ marginBottom: 12 }} aria-labelledby="nowTitle">
       <div className="now-head">
-        <h2 id="nowTitle">Working on now</h2>
+        <h2 id="nowTitle">Uncommitted work</h2>
         {act && (
           <span className={`chip${act.active ? " live-chip" : ""}`}>
             <span className={`dot${act.active ? "" : " stale"}`} />
@@ -728,6 +891,8 @@ function WorkingOn({ d, now, jump }: { d: Status; now: number; jump: (id: string
           )}
         </>
       )}
+
+      <Feed d={d} now={now} jump={jump} />
 
       {w.files && w.files.length > 0 && (
         <details className="files" open={work.length === 0}>

@@ -13,7 +13,7 @@ This is a development tool, not part of the product.
 - **StatusData** — private S3 bucket holding one document, `data.json`.
 - `npm run push` collects the status from the local repository (specs, commits,
   uncommitted files) and the Claude Code transcripts and uploads it as
-  `data.json`. The open page polls for new data.
+  `data.json`. The open page polls for new data every 5 seconds.
 
 The collector expects to sit in the `sst-dev/` folder of the editr repository
 and reads the product specs from `../specs`.
@@ -22,8 +22,12 @@ The page shows:
 
 - overall and per-group progress, every spec with its acceptance criteria as
   checked or unchecked boxes, jumps to FRs, NFRs and groups, `#FR-021` links;
-- what is being worked on: uncommitted files linked to specs, the open
-  criteria of those specs as the tasks left, and the agent's recent activity;
+- live, at the top: which spec and which numbered requirement (§) the agent
+  is working on, with the requirement text, the current action, the last
+  ticked criterion and a spinner while it works; a feed of its last 30 actions
+  with spec and § links;
+- uncommitted work: changed files linked to specs, the open criteria of those
+  specs as the tasks left;
 - token usage per model and session, and how much of the Claude plan's usage
   limits (5-hour window, week) is used, in percent;
 - tables that sort by any column, ascending or descending, stable.

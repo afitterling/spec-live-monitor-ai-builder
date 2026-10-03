@@ -48,6 +48,19 @@ the editr rebuild while the work goes on.
       the last tool, tool calls per tool in the last hour, files it edited;
     - with nothing uncommitted, that no spec is in progress and which commit
       finished last, instead of presenting that commit as current work.
+10a. At the top the page **MUST** state in one sentence what the agent works on
+    right now: the spec (ID and title) and the numbered requirement (§) with its
+    text, taken from the spec IDs and "§" numbers the latest edits write
+    (code comments cite `FR-031 §3`). Older actions count less (half weight
+    every 3 minutes, nothing after 15 minutes). It **MUST** also show the
+    current action (verb and file, or what a command does), the last ticked
+    acceptance criterion, and the other specs touched in the last 15 minutes.
+    While the agent is active, or a command is running, a spinner **MUST** say so.
+10b. A live feed **MUST** list the agent's last 30 actions of the latest
+    session, newest first: verb, file, the specs and § it touched, done /
+    failed / running, and whether a subagent did it.
+10c. The details of a spec **MUST** list its numbered requirements and mark the
+    ones being worked on now.
 11. The page **MUST** show the model in use and the token usage of the Claude
     Code sessions of this project: output, input and cache tokens in total, per
     model and per session, and output tokens per hour.
@@ -56,9 +69,11 @@ the editr rebuild while the work goes on.
     time the figures were read. They come from the Claude Code status line
     (`scripts/statusline.mjs`); without them the page says so.
 12. Token figures **MUST** be numbers, model names and timestamps only; agent
-    activity adds tool names and repository-relative paths of edited files,
-    and spec links add spec IDs. No prompt, answer, file content, tool input
-    other than that path, or tool output may leave the machine.
+    activity adds tool names, repository-relative paths of files read or
+    edited, spec IDs and § numbers found in edits, a fixed label for what a
+    shell command does (tests, build, deploy …) and whether a call failed. No
+    prompt, answer, file content, command, other tool input or tool output may
+    leave the machine.
 13. The page **MUST** show the number of test cases per suite (web, iPad,
     browser checks) and the most recent commits.
 14. The list **MUST** be filterable by text, by kind (FR / NFR), by state and
@@ -75,7 +90,7 @@ the editr rebuild while the work goes on.
 
 ### Live
 
-15. While open, the page **MUST** reload its data at least every 15 seconds
+15. While open, the page **MUST** reload its data every 5 seconds
     without a page reload, and show how long ago the data was produced.
 16. When no data has arrived for 30 minutes, the page **MUST** show that the
     status is stale.
@@ -93,7 +108,7 @@ the editr rebuild while the work goes on.
 - [x] All 41 specs of the repository are listed with their criteria counts. *(Checked locally.)*
 - [x] The overall percentage equals criteria met ÷ all criteria (27 / 183 = 14.8 % on 2026-10-03). *(Checked locally.)*
 - [x] Opening FR-021 shows its four criteria, three of them met, and its Rebuild section. *(Checked locally.)*
-- [x] After a push the open page shows the new figures within 15 seconds, without a reload. *(`sst-dev/scripts/check-live.js`)*
+- [x] After a push the open page shows the new figures within 15 seconds (now polled every 5 s), without a reload. *(`sst-dev/scripts/check-live.js`)*
 - [x] The response carries `X-Robots-Tag: noindex, nofollow` and `Cache-Control: no-store`.
 - [x] At 390 px width the page does not scroll sideways. *(Checked locally.)*
 - [x] Clicking a column header sorts ascending, again descending; within equal values the document order stays, in both directions. *(Checked in headless Chrome: title asc/desc, state asc/desc stable.)*
@@ -101,6 +116,9 @@ the editr rebuild while the work goes on.
 - [x] "Working on now" ranks FR-024 first while its files are being changed, with its five open criteria as tasks. *(Checked locally on 2026-10-03.)*
 - [x] The usage limits show the 5-hour and weekly percentage with reset time. *(Checked locally: 39 % / 19 %.)*
 - [x] At 390 px width the sort control is shown and nothing scrolls sideways. *(Checked in headless Chrome.)*
+- [x] The top of the page names the spec, the § and the requirement text being worked on, with the current action and a spinner while active. *(Checked locally: "FR-037 · Details and skin — §4 "Reset" MUST set all five controls to off as one undo step".)*
+- [x] The live feed lists the last 30 actions with their spec and § links. *(Checked locally.)*
+- [x] Ticking criteria in a spec file shows up as "Last checked". *(FR-031 criteria 1–5, detected from the edit.)*
 - [x] The pushed document contains no conversation text. *(By construction: from the transcripts only usage numbers, model names, timestamps and session ids are read.)*
 
 ## Rebuild

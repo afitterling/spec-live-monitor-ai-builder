@@ -11,7 +11,7 @@ import { collect } from "./collect.mjs";
 
 const quiet = process.argv.includes("--quiet");
 const throttle = process.argv.includes("--throttle");
-const THROTTLE_S = 8;
+const THROTTLE_S = 3;
 const outputsFile = new URL("../.sst/outputs.json", import.meta.url);
 const stampFile = new URL("../.sst/last-push", import.meta.url);
 

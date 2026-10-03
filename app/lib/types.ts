@@ -22,7 +22,9 @@ export interface Spec {
   updated: string;
   file: string;
   requirements: number;
-  criteria: { done: boolean; text: string }[];
+  /** Numbered requirements; absent in documents before version 3. */
+  reqs?: { n: string; text: string }[];
+  criteria:{ done: boolean; text: string }[];
   rebuild: string[];
   started: boolean;
   platforms: { web: boolean; ipad: boolean };
@@ -74,6 +76,47 @@ export interface Activity {
   edited: number;
 }
 
+export interface SpecRef {
+  id: string;
+  /** Requirement number, from "FR-031 §3"; null when only the spec is named. */
+  sec: string | null;
+}
+
+/** One action of the agent, or several identical ones in a row. */
+export interface FeedItem {
+  at: string;
+  kind: "edit" | "write" | "read" | "search" | "shell" | "subagent" | "other";
+  tool: string;
+  path: string | null;
+  /** Shell calls: what the command does ("tests", "deploy" …), never the command. */
+  label: string | null;
+  agent: boolean;
+  count: number;
+  /** true failed · false finished · null still running */
+  failed: boolean | null;
+  specs: SpecRef[];
+}
+
+export interface Focus {
+  id: string;
+  score: number;
+  lastAt: string | null;
+  secs: { sec: string; count: number; lastAt: string; text: string | null }[];
+  files: string[];
+}
+
+/** What the agent does now in the latest session (version 3). */
+export interface Live {
+  session: string;
+  active: boolean;
+  lastAt: string;
+  running: string | null;
+  agentsActive: number;
+  focus: Focus[];
+  feed: FeedItem[];
+  ticked: { id: string; index: number; at: string }[];
+}
+
 export interface Status {
   version: number;
   generatedAt: string;
@@ -90,6 +133,7 @@ export interface Status {
     specs?: WorkSpec[];
     activity?: Activity;
     lastDone?: { hash: string; subject: string; date: string; ids: string[] } | null;
+    live?: Live | null;
   };
   repo: { name: string; branch: string; head: string; dirty: number };
   summary: {

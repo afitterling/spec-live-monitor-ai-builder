@@ -17,7 +17,9 @@ work continues in the repository, without redeploying the page.
    clear message.
 2. A push **MUST** run automatically, so the page follows the work in fine steps:
    - after every Claude Code tool call in this project (`PostToolUse` hook),
-     at most once every 8 seconds,
+     at most once every 3 seconds,
+   - before every shell command (`PreToolUse` hook on `Bash` and the lean-ctx
+     shell), so a running test, build or deploy shows as running,
    - at the end of every Claude Code turn (`Stop` hook), always, and
    - after every commit in the repository (git `post-commit` hook).
 2a. The page **MUST** list the uncommitted files (paths only, newest change
@@ -40,4 +42,4 @@ work continues in the repository, without redeploying the page.
 
 - **Push:** `sst-dev/scripts/push.mjs` (`--quiet` for hooks, `--throttle` for per-tool-call pushes).
 - **Status line:** `statusLine` in the same `.claude/settings.local.json` runs `sst-dev/scripts/statusline.mjs`, which records the usage limits for the next push.
-- **Hooks:** Claude Code `PostToolUse` (throttled) and `Stop` in `.claude/settings.local.json`, git `post-commit` in `.git/hooks/`, all running `sst-dev/scripts/push.mjs` in the background. Both hook locations are machine-local and not committed.
+- **Hooks:** Claude Code `PreToolUse` (shell tools), `PostToolUse` (throttled) and `Stop` in `.claude/settings.local.json`, git `post-commit` in `.git/hooks/`, all running `sst-dev/scripts/push.mjs` in the background. Both hook locations are machine-local and not committed.
