@@ -8,6 +8,7 @@ shown on the status page.
 |---|---|
 | [DEV-001](DEV-001-build-status-page.md) | Build status page |
 | [DEV-002](DEV-002-live-status-push.md) | Live status push |
+| [DEV-003](DEV-003-github-bug-tickets.md) | Bug tickets from GitHub |
 
 Same format as `../../../specs`: `Status:` line (`Draft` / `Implemented`),
 numbered MUST/SHOULD requirements, acceptance criteria as checkboxes, and a

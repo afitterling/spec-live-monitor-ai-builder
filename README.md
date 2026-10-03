@@ -33,6 +33,8 @@ The page shows:
   each limit window the rest needs and any wait for a reset;
 - token usage per model and session, and how much of the Claude plan's usage
   limits (5-hour window, week) is used, in percent;
+- the bug tickets of the GitHub repository (issues with the label `bug`), open
+  and closed, with the specs they name;
 - tables that sort by any column, ascending or descending, stable.
 
 ## Screenshots
@@ -65,6 +67,13 @@ The limits come from the Claude Code status line. Add it to
 
 It prints the model and the used percentages, and keeps the latest figures
 in `.sst/limits.json` for the next push. They need a Claude subscription.
+
+## Bug tickets
+
+The push reads the issues with the label `bug` of the repository's GitHub
+remote through the `gh` CLI (`gh auth login` once), at most once a minute.
+Only number, title, state, labels, dates and named spec IDs reach the page,
+never the ticket text.
 
 ## Commands
 
@@ -106,3 +115,4 @@ The tool's own specs are in `specs/development-tools/`:
 
 - [DEV-001](specs/development-tools/DEV-001-build-status-page.md) — Build status page
 - [DEV-002](specs/development-tools/DEV-002-live-status-push.md) — Live status push
+- [DEV-003](specs/development-tools/DEV-003-github-bug-tickets.md) — Bug tickets from GitHub

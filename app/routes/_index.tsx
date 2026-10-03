@@ -5,7 +5,7 @@ import { json, type HeadersFunction } from "@remix-run/node";
 import { useLoaderData, useRevalidator } from "@remix-run/react";
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { loadStatus } from "../lib/status.server";
-import type { Eta, FeedItem, Spec, SpecRef, Status, Tokens, WorkSpec } from "../lib/types";
+import type { Bug, Bugs, Eta, FeedItem, Spec, SpecRef, Status, Tokens, WorkSpec } from "../lib/types";
 
 const POLL_MS = 5_000;
 /** No push for this long: nobody is working right now. */
@@ -333,6 +333,7 @@ function Dashboard({ status: d, now, loading }: { status: Status; now: number; l
         <button type="button" onClick={() => showList("FR")}>FRs ({d.summary.fr.specs})</button>
         <button type="button" onClick={() => showList("NFR")}>NFRs ({d.summary.nfr.specs})</button>
         <button type="button" onClick={() => showList("all")}>All specs</button>
+        {d.bugs && <a href="#bugTitle">Bugs ({d.bugs.items.filter((b) => b.state === "open").length} open)</a>}
         <a href="#tokTitle">Tokens &amp; limits</a>
         <a href="#comTitle">Commits</a>
       </nav>
@@ -376,6 +377,8 @@ function Dashboard({ status: d, now, loading }: { status: Status; now: number; l
       </section>
 
       <WorkingOn d={d} now={now} jump={jump} />
+
+      {d.bugs && <BugList bugs={d.bugs} now={now} jump={jump} />}
 
       <div className="grid two">
         <section className="card" aria-labelledby="grpTitle">
@@ -582,6 +585,19 @@ function Dashboard({ status: d, now, loading }: { status: Status; now: number; l
                                 </ol>
                               </>
                             )}
+                            {(d.bugs?.items ?? []).some((b) => b.specs.includes(s.id)) && (
+                              <>
+                                <h3>Bugs</h3>
+                                <ul>
+                                  {d.bugs!.items.filter((b) => b.specs.includes(s.id)).map((b) => (
+                                    <li key={b.number}>
+                                      <a href={b.url} target="_blank" rel="noreferrer">#{b.number}</a> {b.title}{" "}
+                                      <span className={`pill ${b.state === "open" ? "bug-open" : "Implemented"}`}>{b.state}</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </>
+                            )}
                             <h3>Rebuild</h3>
                             {s.rebuild.length ? (
                               <ul>{s.rebuild.map((r, i) => <li key={i}><Md text={r} /></li>)}</ul>
@@ -640,6 +656,84 @@ function Dashboard({ status: d, now, loading }: { status: Status; now: number; l
         usage limits from the Claude Code status line.
       </footer>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------- bugs
+
+type BugKey = "number" | "title" | "state" | "specs" | "opened" | "updated";
+const BUG_KEYS: Record<BugKey, (b: Bug) => SortValue> = {
+  number: (b) => b.number,
+  title: (b) => b.title,
+  state: (b) => (b.state === "open" ? 0 : 1),
+  specs: (b) => b.specs[0] ?? null,
+  opened: (b) => Date.parse(b.createdAt),
+  updated: (b) => Date.parse(b.closedAt ?? b.updatedAt),
+};
+
+function BugList({ bugs, now, jump }: { bugs: Bugs; now: number; jump: (id: string) => void }) {
+  const [show, setShow] = useState<"open" | "closed" | "all">("open");
+  const open = bugs.items.filter((b) => b.state === "open").length;
+  const rows = useMemo(() => bugs.items.filter((b) => show === "all" || b.state === show), [bugs.items, show]);
+  const sort = useSort(rows, BUG_KEYS);
+  return (
+    <section className="card" style={{ marginBottom: 12 }} aria-labelledby="bugTitle">
+      <div className="now-head">
+        <h2 id="bugTitle">Bugs</h2>
+        <span className="chip">{open} open · {bugs.items.length - open} closed</span>
+        {bugs.repo && (
+          <a className="chip" href={`https://github.com/${bugs.repo}/issues?q=label%3A${bugs.label}`} target="_blank" rel="noreferrer">
+            GitHub {bugs.repo} · label <code>{bugs.label}</code>
+          </a>
+        )}
+        <span className="dim" style={{ fontSize: 12 }}>read {ago(bugs.fetchedAt, now)}</span>
+        <div className="seg" role="group" aria-label="Bug state" style={{ marginLeft: "auto" }}>
+          {(["open", "closed", "all"] as const).map((k) => (
+            <button type="button" key={k} aria-pressed={show === k} onClick={() => setShow(k)}>
+              {k === "open" ? "Open" : k === "closed" ? "Closed" : "All"}
+            </button>
+          ))}
+        </div>
+      </div>
+      {bugs.error && <p className="err" style={{ fontSize: 12, margin: "4px 0" }}>{bugs.error}</p>}
+      {bugs.items.length === 0 ? (
+        <p className="dim" style={{ margin: "4px 0 0" }}>
+          No bug tickets{bugs.repo ? <> in <code>{bugs.repo}</code> with the label <code>{bugs.label}</code></> : ""}.
+        </p>
+      ) : (
+        <div className="scroll">
+          <table>
+            <thead>
+              <tr>
+                <SortTh k="number" label="#" sort={sort.sort} onSort={sort.toggle} />
+                <SortTh k="title" label="Title" sort={sort.sort} onSort={sort.toggle} />
+                <SortTh k="state" label="State" sort={sort.sort} onSort={sort.toggle} />
+                <SortTh k="specs" label="Specs" sort={sort.sort} onSort={sort.toggle} className="hide-sm" />
+                <SortTh k="opened" label="Opened" sort={sort.sort} onSort={sort.toggle} className="hide-sm" />
+                <SortTh k="updated" label="Updated" sort={sort.sort} onSort={sort.toggle} />
+              </tr>
+            </thead>
+            <tbody>
+              {sort.sorted.length === 0 && <tr><td colSpan={6} className="dim">No {show} bugs.</td></tr>}
+              {sort.sorted.map((b) => (
+                <tr key={b.number}>
+                  <td className="id"><a href={b.url} target="_blank" rel="noreferrer">#{b.number}</a></td>
+                  <td>
+                    {b.title}
+                    {b.labels.map((l) => <span className="pf" key={l} style={{ marginLeft: 6 }}>{l}</span>)}
+                    {b.assignees.length > 0 && <span className="dim"> · {b.assignees.join(", ")}</span>}
+                  </td>
+                  <td><span className={`pill ${b.state === "open" ? "bug-open" : "Implemented"}`}>{b.state}</span></td>
+                  <td className="hide-sm"><RefChips refs={b.specs.map((id) => ({ id, sec: null }))} jump={jump} /></td>
+                  <td className="hide-sm dim">{ago(b.createdAt, now)}</td>
+                  <td className="dim">{ago(b.closedAt ?? b.updatedAt, now)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   );
 }
 

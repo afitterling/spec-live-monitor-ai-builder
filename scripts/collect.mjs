@@ -10,11 +10,13 @@
 //   - how much of the plan's usage limits is used, in percent, as last seen by
 //     the status line (scripts/statusline.mjs)
 //   - recent commits
+//   - bug tickets of the repository's GitHub issues (label "bug"): number,
+//     title, state, labels, dates and the spec IDs they name; never the text
 //
 //   node scripts/collect.mjs            prints the JSON
 //   import { collect } from "./collect.mjs"
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -620,6 +622,66 @@ function liveWork(specs, toolUses, specByFile, known, now) {
   };
 }
 
+// ---------------------------------------------------------------- bugs
+
+const BUGS_CACHE = fileURLToPath(new URL("../.sst/bugs.json", import.meta.url));
+/** GitHub is asked at most this often; pushes in between reuse the cache. */
+const BUGS_TTL_MS = 60 * 1000;
+const BUG_LABEL = "bug";
+
+/** owner/name of the repository's GitHub remote, or null. */
+function githubRepo() {
+  const url = git("remote", "get-url", "origin");
+  const m = /github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?$/.exec(url);
+  return m ? m[1] : null;
+}
+
+/**
+ * Bug tickets from GitHub issues through the gh CLI (its own login). The
+ * ticket text is read only for the spec IDs it names and is not kept.
+ */
+function collectBugs(known) {
+  const repo = githubRepo();
+  if (!repo) return { repo: null, label: BUG_LABEL, error: "no GitHub remote", fetchedAt: null, items: [] };
+  try {
+    const cached = JSON.parse(readFileSync(BUGS_CACHE, "utf8"));
+    if (cached.repo === repo && Date.now() - Date.parse(cached.fetchedAt) < BUGS_TTL_MS) return cached;
+  } catch {}
+  let raw;
+  try {
+    raw = execFileSync(
+      "gh",
+      ["issue", "list", "--repo", repo, "--label", BUG_LABEL, "--state", "all", "--limit", "200",
+        "--json", "number,title,state,labels,createdAt,updatedAt,closedAt,url,assignees,body"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 15_000 },
+    );
+  } catch {
+    // Offline or not logged in: keep showing the last known list.
+    try {
+      return { ...JSON.parse(readFileSync(BUGS_CACHE, "utf8")), error: "GitHub not reachable, showing the last list" };
+    } catch {
+      return { repo, label: BUG_LABEL, error: "GitHub not reachable (gh CLI logged in?)", fetchedAt: null, items: [] };
+    }
+  }
+  const items = JSON.parse(raw).map((i) => ({
+    number: i.number,
+    title: i.title,
+    state: i.state === "OPEN" ? "open" : "closed",
+    labels: i.labels.map((l) => l.name).filter((n) => n !== BUG_LABEL),
+    createdAt: i.createdAt,
+    updatedAt: i.updatedAt,
+    closedAt: i.closedAt ?? null,
+    url: i.url,
+    assignees: i.assignees.map((a) => a.login),
+    specs: [...new Set(`${i.title}\n${i.body ?? ""}`.match(/\bN?FR-\d{3}\b/g) ?? [])].filter((id) => known.has(id)),
+  }));
+  const out = { repo, label: BUG_LABEL, error: null, fetchedAt: new Date().toISOString(), items };
+  try {
+    writeFileSync(BUGS_CACHE, JSON.stringify(out));
+  } catch {}
+  return out;
+}
+
 // ---------------------------------------------------------------- ETA
 
 /** A gap between two model responses longer than this is a break, not work. */
@@ -795,6 +857,7 @@ export function collect() {
     tests: collectTests(),
     tokens,
     commits: commits.slice(0, 40),
+    bugs: collectBugs(new Set(specs.map((s) => s.id))),
   };
 }
 

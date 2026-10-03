@@ -45,6 +45,7 @@ h2 { font-size: 14px; margin: 0 0 10px; font-weight: 600; }
 .pill.Implemented { background: rgba(63,174,107,.18); color: #7fd6a2; }
 .pill.Started { background: rgba(61,125,255,.18); color: #8fb2ff; }
 .pill.Draft { background: var(--panel-2); color: var(--text-dim); }
+.pill.bug-open { background: rgba(226,86,74,.18); color: #f19a91; }
 .pill.Superseded { background: rgba(217,164,58,.15); color: #e2c178; }
 .pf { font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--border); color: var(--text-dim); }
 .pf.on { color: var(--text); border-color: #4a5160; background: var(--panel-2); }
@@ -76,6 +77,8 @@ code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; background: va
 .commits li { display: flex; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--border); list-style: none; }
 .commits .h { font: 12px ui-monospace, Menlo, monospace; color: var(--text-dim); }
 .err { color: var(--danger); }
+a { color: #8fb2ff; }
+a.chip { color: var(--text-dim); text-decoration: none; }
 
 /* Jump links */
 .jump { display: flex; flex-wrap: wrap; gap: 6px; margin: -6px 0 14px; }

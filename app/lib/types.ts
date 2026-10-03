@@ -153,8 +153,33 @@ export interface Eta {
   windows: EtaWindow[];
 }
 
+export interface Bug {
+  number: number;
+  title: string;
+  state: "open" | "closed";
+  /** Labels besides "bug". */
+  labels: string[];
+  createdAt: string;
+  updatedAt: string;
+  closedAt: string | null;
+  url: string;
+  assignees: string[];
+  /** Spec IDs named in the title or text. */
+  specs: string[];
+}
+
+/** Bug tickets of the GitHub repository (DEV-003). */
+export interface Bugs {
+  repo: string | null;
+  label: string;
+  error: string | null;
+  fetchedAt: string | null;
+  items: Bug[];
+}
+
 export interface Status {
   version: number;
+  bugs?: Bugs;
   generatedAt: string;
   eta?: Eta | null;
   workingOn: {
