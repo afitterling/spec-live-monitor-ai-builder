@@ -299,8 +299,10 @@ function Dashboard({ status: d, now, loading }: { status: Status; now: number; l
     ["Model", (tok.currentModel ?? "–").replace(/^claude-/, ""), `last activity ${ago(tok.lastActivity, now)}`],
     [
       "ETA",
-      d.eta?.workLeftH != null ? `${hours(d.eta.workLeftH)}` : "–",
-      d.eta?.limited ? (d.eta.waitH > 0 ? `+ ${hours(d.eta.waitH)} waiting for limits` : "limits do not stop it") : "of work, limits unknown",
+      d.eta?.workLeftH == null ? "–" : d.eta.remaining === 0 ? (d.eta.blocked ? "waiting" : "done") : `${hours(d.eta.workLeftH)}`,
+      d.eta?.remaining === 0
+        ? d.eta.blocked ? `${d.eta.blocked} criteria wait for the owner or others` : "all criteria met"
+        : `${d.eta?.remaining ?? "–"} criteria for the agent${d.eta?.blocked ? ` · ${d.eta.blocked} wait for others` : ""}`,
     ],
     mainLimit
       ? [
@@ -751,21 +753,30 @@ function when(iso: string | null, now: number) {
 
 function EtaCard({ eta: e, now }: { eta: Eta; now: number }) {
   const waits = e.windows.filter((w) => w.waitH > 0);
+  const blocked = e.blocked ?? 0;
+  const nothingLeft = e.remaining === 0;
   return (
     <section className="card eta" aria-labelledby="etaTitle" style={{ marginBottom: 12 }}>
-      <h2 id="etaTitle">Estimate to 100 %</h2>
+      <h2 id="etaTitle">Estimate for what the agent can finish</h2>
+      {blocked > 0 && (
+        <p className="eta-blocked" style={{ margin: "0 0 10px" }}>
+          <strong>{blocked}</strong> open {blocked === 1 ? "criterion waits" : "criteria wait"} for the owner or a third party and{" "}
+          {blocked === 1 ? "is" : "are"} not part of the estimate:{" "}
+          <span className="dim">{(e.blockedSpecs ?? []).map((s) => `${s.id} (${s.count})`).join(", ")}</span>
+        </p>
+      )}
       <div className="eta-row">
         <div className="eta-big">
           <div className="label">Without limits</div>
-          <div className="value">{when(e.withoutLimits, now)}</div>
+          <div className="value">{nothingLeft ? (blocked ? "nothing left to do alone" : "done") : when(e.withoutLimits, now)}</div>
           <div className="sub">
-            ≈ {hours(e.workLeftH)} of work at {e.pace?.toFixed(1) ?? "–"} criteria/h
+            {nothingLeft ? "no open criterion the agent can meet on its own · usual pace " : `≈ ${hours(e.workLeftH)} of work at `}{e.pace?.toFixed(1) ?? "–"} criteria/h
             {e.workLeftRecentH !== null && ` · at the pace of the last 3 h: ${hours(e.workLeftRecentH)}`}
           </div>
         </div>
         <div className="eta-big">
           <div className="label">With usage limits</div>
-          <div className="value">{e.limited ? when(e.withLimits, now) : "–"}</div>
+          <div className="value">{nothingLeft ? "–" : e.limited ? when(e.withLimits, now) : "–"}</div>
           <div className="sub">
             {!e.limited
               ? "No usable limit figures yet (status line, or too little use in the window)."
@@ -778,7 +789,10 @@ function EtaCard({ eta: e, now }: { eta: Eta; now: number }) {
       </div>
       <dl className="eta-facts">
         <dt>Remaining</dt>
-        <dd>{e.remaining} of {e.remaining + e.done} acceptance criteria (FR {e.remainingFr} · NFR {e.remainingNfr})</dd>
+        <dd>
+          {e.remaining + blocked} of {e.remaining + blocked + e.done} acceptance criteria open (FR {e.remainingFr} · NFR {e.remainingNfr}):{" "}
+          {e.remaining} for the agent{(e.workableSpecs ?? []).length ? ` (${e.workableSpecs!.map((s) => `${s.id} ${s.count}`).join(", ")})` : ""}, {blocked} waiting
+        </dd>
         <dt>Pace</dt>
         <dd>
           {e.done} met in {hours(e.workH)} of active agent work{e.pace ? ` = ${e.pace.toFixed(1)}/h` : ""}
@@ -810,7 +824,8 @@ function EtaCard({ eta: e, now }: { eta: Eta; now: number }) {
         </div>
       )}
       <div className="dim" style={{ marginTop: 8, fontSize: 12 }}>
-        Rough: assumes the open criteria cost as much time and tokens as the met ones, and that the agent works on without a break. Limits are
+        Rough: assumes the open criteria cost as much time and tokens as the met ones, and that the agent works on without a break. An open
+        criterion counts as waiting when its line in the spec ends in a note that says why it is open; superseded specs count nowhere. Limits are
         per account; only this project's output tokens are seen and stand in for usage. "–" where a window holds too little use to measure.
       </div>
     </section>

@@ -24,7 +24,9 @@ export interface Spec {
   requirements: number;
   /** Numbered requirements; absent in documents before version 3. */
   reqs?: { n: string; text: string }[];
-  criteria:{ done: boolean; text: string }[];
+  criteria:{ done: boolean; text: string; blocked?: boolean }[];
+  /** Open criteria: waiting for the owner or a third party, and doable by the agent. */
+  open?: { blocked: number; workable: number };
   rebuild: string[];
   started: boolean;
   platforms: { web: boolean; ipad: boolean };
@@ -129,9 +131,14 @@ export interface EtaWindow {
   waitH: number;
 }
 
-/** Estimate to 100 % of the acceptance criteria (version 3). */
+/** Estimate for the criteria the agent can still meet on its own (version 3). */
 export interface Eta {
+  /** Open criteria the agent can meet on its own; the estimate covers these. */
   remaining: number;
+  /** Open criteria that wait for the owner or a third party; absent in older data. */
+  blocked?: number;
+  blockedSpecs?: { id: string; count: number }[];
+  workableSpecs?: { id: string; count: number }[];
   remainingFr: number;
   remainingNfr: number;
   done: number;

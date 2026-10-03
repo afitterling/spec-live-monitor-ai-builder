@@ -92,7 +92,11 @@ function parseSpec(path) {
   const requirementBody = sec["Requirement"] ?? sec["Requirements"] ?? "";
   const criteria = [];
   for (const m of (sec["Acceptance criteria"] ?? "").matchAll(/^- \[( |x|X)\] (.+)$/gm)) {
-    criteria.push({ done: m[1] !== " ", text: m[2].trim() });
+    const done = m[1] !== " ";
+    const text = m[2].trim();
+    // An open criterion that ends in a note "*( … )*" says why it is open: it
+    // waits for the owner or a third party and is not work the agent can do.
+    criteria.push({ done, text, blocked: !done && /\*\(.+\)\*\s*$/.test(text) });
   }
   const rebuild = bullets(sec["Rebuild"]);
   const rebuildText = rebuild.join("\n");
@@ -127,7 +131,11 @@ function collectSpecs(commitsBySpec) {
     s.commits = commits.slice(0, 10);
     s.lastCommit = commits[0]?.date ?? null;
     const done = s.criteria.filter((c) => c.done).length;
-    s.points = { done, total: s.criteria.length };
+    // A superseded spec is not built: its criteria count neither as met nor as open.
+    const superseded = /superseded/i.test(s.status);
+    s.points = superseded ? { done: 0, total: 0 } : { done, total: s.criteria.length };
+    const open = superseded ? [] : s.criteria.filter((c) => !c.done);
+    s.open = { blocked: open.filter((c) => c.blocked).length, workable: open.filter((c) => !c.blocked).length };
   }
   return specs;
 }
@@ -700,8 +708,10 @@ function activeMs(times) {
 }
 
 /**
- * Estimate to 100 % of the acceptance criteria, without and with the plan's
- * usage limits.
+ * Estimate for the acceptance criteria the agent can still meet on its own,
+ * without and with the plan's usage limits. Open criteria that carry a note
+ * (waiting for the owner or a third party) are counted apart and take no part
+ * in the estimate: no pace of the agent finishes them.
  *
  * Without limits: remaining criteria ÷ pace (criteria met per active hour of
  * the agent), spread over the active hours per working day seen so far.
@@ -712,10 +722,13 @@ function activeMs(times) {
  * the next windows. Output tokens stand in for usage, and other projects in
  * the same windows are not seen: a rough figure, and the page says so.
  */
-function eta(summary, msgs, toolUses, limits) {
+function eta(summary, specs, msgs, toolUses, limits) {
   const now = Date.now();
   const all = summary.all;
-  const remaining = all.points.total - all.points.done;
+  const blocked = specs.reduce((n, s) => n + s.open.blocked, 0);
+  // What the estimate is about: open criteria without a note.
+  const remaining = specs.reduce((n, s) => n + s.open.workable, 0);
+  const open = (kind) => specs.filter((s) => s.kind === kind).reduce((n, s) => n + s.open.workable + s.open.blocked, 0);
   const times = msgs.map((m) => Date.parse(m.at)).filter(Number.isFinite).sort((a, b) => a - b);
   if (!times.length) return null;
   const workMs = activeMs(times);
@@ -807,9 +820,14 @@ function eta(summary, msgs, toolUses, limits) {
   for (const w of windows) w.waitH = binding.get(w.key) ?? 0;
 
   return {
+    /** Open criteria the agent can meet on its own; the estimate covers these. */
     remaining,
-    remainingFr: summary.fr.points.total - summary.fr.points.done,
-    remainingNfr: summary.nfr.points.total - summary.nfr.points.done,
+    /** Open criteria that wait for the owner or a third party. */
+    blocked,
+    blockedSpecs: specs.filter((s) => s.open.blocked).map((s) => ({ id: s.id, count: s.open.blocked })),
+    workableSpecs: specs.filter((s) => s.open.workable).map((s) => ({ id: s.id, count: s.open.workable })),
+    remainingFr: open("FR"),
+    remainingNfr: open("NFR"),
     done: all.points.done,
     workH,
     days,
@@ -852,7 +870,7 @@ export function collect() {
       dirty: git("status", "--porcelain").split("\n").filter(Boolean).length,
     },
     summary,
-    eta: eta(summary, msgs, toolUses, tokens.limits),
+    eta: eta(summary, specs, msgs, toolUses, tokens.limits),
     specs,
     tests: collectTests(),
     tokens,
